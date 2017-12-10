@@ -20,7 +20,12 @@
 #include <stdbool.h>
 #include <math.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+
 #include "config.h"
+#include "cmd.h"
 
 /**********************
  * Constants and macros
@@ -44,9 +49,10 @@
  */
 
 
+
 /* Characterizes a single trace operation (allocator request) */
 typedef struct {
-    enum { ALLOC, FREE, REALLOC } type; /* type of request */
+    enum op_type type;                  /* type of request */
     long index;                         /* index for free() to use later */
     size_t size;                        /* byte size of alloc/realloc request */
 } traceop_t;
@@ -99,7 +105,6 @@ static void reinit_trace(trace_t *trace);
 static void free_trace(trace_t *trace);
 
 /* Routines for evaluating the utilization of libc malloc */
-static void run_trace(trace_t *trace, int fd);
 static double eval_libc_util(trace_t *trace);
 
 
@@ -109,11 +114,6 @@ static void unix_error(const char *fmt, ...)
     __attribute__((format(printf, 1,2), noreturn));
 
 
-
-
-/**************
- * Main routine
- **************/
 int main(int argc, char **argv)
 {
     int i;
@@ -160,10 +160,9 @@ int main(int argc, char **argv)
     trace_t *trace;
     for (i=0; i < num_global_tracefiles; i++) {
         trace = read_trace(tracedir, global_tracefiles[i]);
-        printf("Checking libc malloc for utilization on tracefile %s: ", trace->filename);
         util = eval_libc_util(trace) * 100.0;
         free_trace(trace);
-        printf("%.2lf%%\n", util);
+        printf("libc malloc utilization on tracefile %s: %.2lf%%\n", trace->filename, util);
     }
 
     return 0;
@@ -299,48 +298,76 @@ static void free_trace(trace_t *trace)
 
 
 
-static void run_trace(trace_t *trace, int fd)
+static double eval_libc_util(trace_t *trace)
 {
-    int i;
-    int index;
-    size_t size, oldsize, newsize;
-    char *p;
-    char *newp, *oldp;
-
-    size_t max_total_size;
-    size_t total_size = 0;
-
+    int fd[2];
     reinit_trace(trace);
 
-    // notify the parent
-    write(fd, "S", 1);
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) < 0) {
+        unix_error("socketpair");
+    }
 
-    for (i = 0;  i < trace->num_ops;  i++) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        unix_error("fork");
+    } else if (pid == 0) {
+        // child process
+        close(fd[0]);
+        close(STDIN_FILENO);
+        char fdstr[10];
+        sprintf(fdstr, "%d", fd[1]);
+        if (execlp("./runtrace", "./runtrace", fdstr, (char *)NULL) < 0)
+            unix_error("execlp");
+    }
+
+    // parent process
+    int i;
+    int index;
+
+    char *oldp, *p;
+    size_t oldsize, newsize, size;
+
+    size_t max_total_size = 0;
+    size_t total_size = 0;
+
+    request_t req;
+    response_t res;
+
+    close(fd[1]);
+    write(fd[0], &(trace->num_ops), sizeof(trace->num_ops));
+
+    for (i = 0; i < trace->num_ops; i++) {
         switch (trace->ops[i].type) {
-            case ALLOC: /* mm_alloc */
+            case ALLOC:
                 index = trace->ops[i].index;
                 size = trace->ops[i].size;
-                p = malloc(size);
-                assert(p != NULL);
-                /* Remember region and size */
-                trace->blocks[index] = p;
+                req.type = ALLOC;
+                req.newsize = size;
+                write(fd[0], &req, sizeof(req));
+                read(fd[0], &res, sizeof(res));
+                trace->blocks[index] = res.p;
                 trace->block_sizes[index] = size;
                 total_size += size;
                 break;
 
-            case REALLOC: /* mm_realloc */
+            case REALLOC:
                 index = trace->ops[i].index;
                 newsize = trace->ops[i].size;
                 oldsize = trace->block_sizes[index];
                 oldp = trace->blocks[index];
-                assert ((newp = realloc(oldp, newsize)) != NULL || newsize == 0);
+                req.type = REALLOC;
+                req.newsize = newsize;
+                req.oldp = oldp;
+                write(fd[0], &req, sizeof(req));
+                read(fd[0], &res, sizeof(res));
                 /* Remember region and size */
-                trace->blocks[index] = newp;
+                trace->blocks[index] = res.p;
                 trace->block_sizes[index] = newsize;
                 total_size += (newsize - oldsize);
                 break;
 
-            case FREE: /* mm_free */
+            case FREE:
                 index = trace->ops[i].index;
                 if (index < 0) {
                     size = 0;
@@ -351,7 +378,10 @@ static void run_trace(trace_t *trace, int fd)
                 }
 
                 if (p != NULL) {
-                    free(p);
+                    req.type = FREE;
+                    req.oldp = p;
+                    write(fd[0], &req, sizeof(req));
+                    read(fd[0], &res, sizeof(res));
                 }
 
                 total_size -= size;
@@ -366,18 +396,10 @@ static void run_trace(trace_t *trace, int fd)
             total_size : max_total_size;
     }
 
-    // send max_total_size to parent
-    write(fd, &max_total_size, sizeof(max_total_size));
-    // wait util one byte is read
-    read(fd, &max_total_size, 1);
-}
+    close(fd[0]);
+    waitpid(pid, NULL, 0);
 
-
-static double eval_libc_util(trace_t *trace)
-{
-
-
-    return 0.0;
+    return (double)max_total_size / 10000;
 }
 
 /*
