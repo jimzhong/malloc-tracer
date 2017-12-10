@@ -74,9 +74,6 @@ typedef struct {
  * Global variables
  *******************/
 
-
-int verbose = 0;  /* global flag for verbose output */
-
 /* Directory where default tracefiles are found */
 static char tracedir[MAXLINE] = TRACEDIR;
 
@@ -127,16 +124,12 @@ int main(int argc, char **argv)
     /*
      * Read and interpret the command line arguments
      */
-    while ((c = getopt(argc, argv, "d:f:c:s:t:v:hpOVAlDT")) != EOF) {
+    while ((c = getopt(argc, argv, "hf:")) != EOF) {
         switch (c) {
 
         case 'f': /* Use one specific trace file only (relative to curr dir) */
             add_tracefile(optarg);
             strcpy(tracedir, "./");
-            break;
-
-        case 'V': /* Increase verbosity level */
-            verbose += 1;
             break;
 
         case 'h':
@@ -196,10 +189,6 @@ static trace_t *read_trace(const char *tracedir, const char *filename)
     int max_index = 0;
     int op_index;
     int ignore = 0;
-
-    if (verbose > 1) {
-        printf("Reading tracefile: %s\n", filename);
-    }
 
     /* Allocate the trace record */
     if ((trace = (trace_t *) malloc(sizeof(trace_t))) == NULL) {
@@ -421,9 +410,8 @@ void unix_error(const char *fmt, ...) {
  */
 static void usage(char *prog)
 {
-    fprintf(stderr, "Usage: %s [-hV] [-f <file>]\n", prog);
+    fprintf(stderr, "Usage: %s [-h] [-f <file>]\n", prog);
     fprintf(stderr, "Options\n");
     fprintf(stderr, "\t-h         Print this message.\n");
-    fprintf(stderr, "\t-V         Print diagnostics as each trace is run.\n");
     fprintf(stderr, "\t-f <file>  Use <file> as the trace file\n");
 }
