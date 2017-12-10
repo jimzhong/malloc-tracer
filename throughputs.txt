@@ -1,0 +1,10 @@
+Intel(R)Xeon(R)CPUE5520@2.27GHz:checkpoint:13090
+Intel(R)Xeon(R)CPUE5520@2.27GHz:regular:13056
+Intel(R)Xeon(R)CPUE5-2680v2@2.80GHz:checkpoint:17422
+Intel(R)Xeon(R)CPUE5-2680v2@2.80GHz:regular:19868
+Intel(R)Xeon(R)CPUE5-2687Wv3@3.10GHz:checkpoint:16058
+Intel(R)Xeon(R)CPUE5-2687Wv3@3.10GHz:regular:19241
+Intel(R)Xeon(R)CPUE5-2690v2@3.00GHz:checkpoint:14684
+Intel(R)Xeon(R)CPUE5-2690v2@3.00GHz:regular:18575
+
+
