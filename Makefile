@@ -15,4 +15,4 @@ runtrace: runtrace.c cmd.h
 	$(CC) $(CFLAGS) -o runtrace runtrace.c
 
 clean:
-	rm -f *~ *.o mdriver
+	rm -f *~ *.o mdriver runtrace
