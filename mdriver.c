@@ -126,9 +126,6 @@ int main(int argc, char **argv)
     global_tracefiles = NULL;  /* array of trace file names */
     num_global_tracefiles = 0;    /* the number of traces in that array */
 
-    setbuf(stdout, 0);
-    setbuf(stderr, 0);
-
     char c;
     /*
      * Read and interpret the command line arguments
@@ -167,7 +164,11 @@ int main(int argc, char **argv)
     for (i=0; i < num_global_tracefiles; i++) {
         trace = read_trace(tracedir, global_tracefiles[i]);
         util = eval_libc_util(trace) * 100.0;
-        printf("tracefile: %-40s utilization: %.2lf%%\n", trace->filename, util);
+        printf("tracefile: %-35s utilization: ", trace->filename);
+        if (util > 0)
+            printf("%.2lf%%\n", util);
+        else
+            printf("invalid\n");
         free_trace(trace);
     }
 
@@ -311,16 +312,24 @@ static int wait_for_syscall(pid_t child) {
     }
 }
 
-static size_t tracer(pid_t pid) {
+static size_t trace_heapsize(pid_t pid) {
     size_t heap_hi = 0;
     size_t heap_lo = 0;
+    int valid = 1;
     struct user_regs_struct regs_in, regs_out;
     int status;
 
     if (verbose)
         printf("Tracer started, child pid = %d\n", pid);
 
-    waitpid(pid, &status, 0);
+    if (waitpid(pid, &status, 0) < 0) {
+        unix_error("waitpid");
+    }
+    assert(WSTOPSIG(status) == SIGTSTP);
+    if (kill(pid, SIGCONT) < 0) {
+        unix_error("kill");
+    }
+
     ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD);
 
     for (;;) {
@@ -335,20 +344,38 @@ static size_t tracer(pid_t pid) {
         if (ptrace(PTRACE_GETREGS, pid, NULL, &regs_out) < 0)
             unix_error("ptrace 2");
 
-        if (regs_in.orig_rax == 12) {
-            heap_hi = (regs_out.rax > heap_hi) ? regs_out.rax: heap_hi;
-            if (heap_lo == 0 && regs_in.rdi == 0)
-                heap_lo = regs_out.rax;
-            if (verbose)
-                printf("sys_brk(%llx) = %llx\n", regs_in.rdi, regs_out.rax);
+        assert(regs_in.orig_rax == regs_out.orig_rax);
+
+        switch (regs_in.orig_rax) {
+            case 12:
+                heap_hi = (regs_out.rax > heap_hi) ? regs_out.rax: heap_hi;
+                if (heap_lo == 0 && regs_in.rdi == 0)
+                    heap_lo = regs_out.rax;
+                if (verbose)
+                    printf("sys_brk(%llx) = %llx\n", regs_in.rdi, regs_out.rax);
+                break;
+            case 9:
+                // TODO: calculate total heapsize with mmap enabled?
+                valid = 0;
+            case 0: //read
+            case 1: //write
+            case 2: //open
+            case 3: //close
+                break;
+            default:
+                if (verbose)
+                    printf("syscall %lld\n", regs_in.orig_rax);
+                break;
         }
     }
 
     if (verbose) {
-        printf("Child exited\n");
         printf("Heap high = %lx\n", heap_hi);
         printf("Heap low = %lx\n", heap_lo);
     }
+
+    if (!valid)
+        return 0;
 
     return heap_hi - heap_lo;
 }
@@ -452,12 +479,6 @@ static double eval_libc_util(trace_t *trace)
         char fdstr[10];
         sprintf(fdstr, "%d", fd[1]);
 
-        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0) {
-            unix_error("child ptrace");
-        }
-
-        raise(SIGSTOP);
-
         if (execlp("./runtrace", "./runtrace", fdstr, (char *)NULL) < 0)
             unix_error("execlp");
     }
@@ -471,9 +492,13 @@ static double eval_libc_util(trace_t *trace)
     args.fd = fd[0];
     pthread_create(&tid, NULL, communicate, &args);
 
-    size_t heapsize = tracer(pid);
-
+    size_t heapsize = trace_heapsize(pid);
     pthread_join(tid, NULL);
+
+    if (heapsize == 0) {
+        // result is invalid
+        return -1.0;
+    }
 
     return (double)args.max_total_size / (double)heapsize;
 }

@@ -2,6 +2,10 @@
 #include <malloc.h>
 #include <assert.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/ptrace.h>
 
 #include "cmd.h"
 
@@ -61,6 +65,10 @@ int main(int argc, char **argv)
     //disable the use of mmap for large allocation requests.
     assert(mallopt(M_TRIM_THRESHOLD, -1));
     // do not shrink the heap
+    if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0) {
+        perror("ptrace");
+    }
+    raise(SIGTSTP);
     run(fd);
     close(fd);
     dbg_printf("runtrace finished.\n");
