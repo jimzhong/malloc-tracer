@@ -18,11 +18,16 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <math.h>
+
+#include <pthread.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
 
 #include "config.h"
 #include "cmd.h"
@@ -70,10 +75,16 @@ typedef struct {
 } trace_t;
 
 
+struct communicate_args {
+    trace_t *trace; // in
+    int fd;         // in
+    size_t max_total_size;  // out
+};
+
 /********************
  * Global variables
  *******************/
-
+int verbose = 0;
 /* Directory where default tracefiles are found */
 static char tracedir[MAXLINE] = TRACEDIR;
 
@@ -124,7 +135,7 @@ int main(int argc, char **argv)
     /*
      * Read and interpret the command line arguments
      */
-    while ((c = getopt(argc, argv, "hf:")) != EOF) {
+    while ((c = getopt(argc, argv, "hvf:")) != EOF) {
         switch (c) {
 
         case 'f': /* Use one specific trace file only (relative to curr dir) */
@@ -136,6 +147,10 @@ int main(int argc, char **argv)
             usage(argv[0]);
             exit(0);
 
+        case 'v':
+            verbose = 1;
+            break;
+            
         default:
             usage(argv[0]);
             exit(1);
@@ -285,6 +300,138 @@ static void free_trace(trace_t *trace)
     free(trace);              /* and the trace record itself... */
 }
 
+// reference https://blog.nelhage.com/2010/08/write-yourself-an-strace-in-70-lines-of-code/
+static int wait_for_syscall(pid_t child) {
+    int status;
+    while (1) {
+        ptrace(PTRACE_SYSCALL, child, 0, 0);
+        waitpid(child, &status, 0);
+        if (WIFSTOPPED(status) && (WSTOPSIG(status) & 0x80))
+            return 0;
+        if (WIFEXITED(status))
+            return 1;
+    }
+}
+
+static size_t tracer(pid_t pid) {
+    size_t heap_hi = 0;
+    size_t heap_lo = 0;
+    struct user_regs_struct regs_in, regs_out;
+    int status;
+
+    if (verbose)
+        printf("Tracer started, child pid = %d\n", pid);
+
+    waitpid(pid, &status, 0);
+    ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD);
+
+    for (;;) {
+        if (wait_for_syscall(pid))
+            break;
+        // on entery of syscall
+        if (ptrace(PTRACE_GETREGS, pid, NULL, &regs_in) < 0)
+            unix_error("ptrace 1");
+        if (wait_for_syscall(pid))
+            break;
+        // on exit of syscall
+        if (ptrace(PTRACE_GETREGS, pid, NULL, &regs_out) < 0)
+            unix_error("ptrace 2");
+
+        if (regs_in.orig_rax == 12) {
+            heap_hi = (regs_out.rax > heap_hi) ? regs_out.rax: heap_hi;
+            if (heap_lo == 0 && regs_in.rdi == 0)
+                heap_lo = regs_out.rax;
+            if (verbose)
+                printf("sys_brk(%llx) = %llx\n", regs_in.rdi, regs_out.rax);
+        }
+    }
+
+    if (verbose) {
+        printf("Child exited\n");
+        printf("Heap high = %lx\n", heap_hi);
+        printf("Heap low = %lx\n", heap_lo);
+    }
+
+    return heap_hi - heap_lo;
+}
+
+
+static void * communicate(void * vargs)
+{
+    int index;
+    char *oldp, *p;
+    size_t oldsize, newsize, size;
+
+    size_t max_total_size = 0;
+    size_t total_size = 0;
+
+    request_t req;
+    response_t res;
+    trace_t *trace = ((struct communicate_args *)vargs)->trace;
+    int fd = ((struct communicate_args *)vargs)->fd;
+
+    for (int i = 0; i < trace->num_ops; i++) {
+        switch (trace->ops[i].type) {
+            case ALLOC:
+                index = trace->ops[i].index;
+                size = trace->ops[i].size;
+                req.type = ALLOC;
+                req.newsize = size;
+                write(fd, &req, sizeof(req));
+                read(fd, &res, sizeof(res));
+                trace->blocks[index] = res.p;
+                trace->block_sizes[index] = size;
+                total_size += size;
+                break;
+
+            case REALLOC:
+                index = trace->ops[i].index;
+                newsize = trace->ops[i].size;
+                oldsize = trace->block_sizes[index];
+                oldp = trace->blocks[index];
+                req.type = REALLOC;
+                req.newsize = newsize;
+                req.oldp = oldp;
+                write(fd, &req, sizeof(req));
+                read(fd, &res, sizeof(res));
+                trace->blocks[index] = res.p;
+                trace->block_sizes[index] = newsize;
+                total_size += (newsize - oldsize);
+                break;
+
+            case FREE:
+                index = trace->ops[i].index;
+                if (index < 0) {
+                    size = 0;
+                    p = NULL;
+                } else {
+                    size = trace->block_sizes[index];
+                    p = trace->blocks[index];
+                }
+
+                if (p != NULL) {
+                    req.type = FREE;
+                    req.oldp = p;
+                    write(fd, &req, sizeof(req));
+                    read(fd, &res, sizeof(res));
+                }
+
+                total_size -= size;
+                break;
+
+            default:
+                assert(0);
+        }
+        // update the high-water mark
+        max_total_size = (total_size > max_total_size) ?
+            total_size : max_total_size;
+    }
+
+    close(fd);
+    ((struct communicate_args *)vargs)->max_total_size = max_total_size;
+
+    return NULL;
+}
 
 
 static double eval_libc_util(trace_t *trace)
@@ -306,6 +453,13 @@ static double eval_libc_util(trace_t *trace)
         close(STDIN_FILENO);
         char fdstr[10];
         sprintf(fdstr, "%d", fd[1]);
+
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0) {
+            unix_error("child ptrace");
+        }
+
+        raise(SIGSTOP);
+
         if (execlp("./runtrace", "./runtrace", fdstr, (char *)NULL) < 0)
             unix_error("execlp");
     }
@@ -313,79 +467,17 @@ static double eval_libc_util(trace_t *trace)
     // parent process
     close(fd[1]);
 
-    int index;
-    char *oldp, *p;
-    size_t oldsize, newsize, size;
+    pthread_t tid;
+    struct communicate_args args;
+    args.trace = trace;
+    args.fd = fd[0];
+    pthread_create(&tid, NULL, communicate, &args);
 
-    size_t max_total_size = 0;
-    size_t total_size = 0;
+    size_t heapsize = tracer(pid);
 
-    request_t req;
-    response_t res;
+    pthread_join(tid, NULL);
 
-    for (int i = 0; i < trace->num_ops; i++) {
-        switch (trace->ops[i].type) {
-            case ALLOC:
-                index = trace->ops[i].index;
-                size = trace->ops[i].size;
-                req.type = ALLOC;
-                req.newsize = size;
-                write(fd[0], &req, sizeof(req));
-                read(fd[0], &res, sizeof(res));
-                trace->blocks[index] = res.p;
-                trace->block_sizes[index] = size;
-                total_size += size;
-                break;
-
-            case REALLOC:
-                index = trace->ops[i].index;
-                newsize = trace->ops[i].size;
-                oldsize = trace->block_sizes[index];
-                oldp = trace->blocks[index];
-                req.type = REALLOC;
-                req.newsize = newsize;
-                req.oldp = oldp;
-                write(fd[0], &req, sizeof(req));
-                read(fd[0], &res, sizeof(res));
-                /* Remember region and size */
-                trace->blocks[index] = res.p;
-                trace->block_sizes[index] = newsize;
-                total_size += (newsize - oldsize);
-                break;
-
-            case FREE:
-                index = trace->ops[i].index;
-                if (index < 0) {
-                    size = 0;
-                    p = NULL;
-                } else {
-                    size = trace->block_sizes[index];
-                    p = trace->blocks[index];
-                }
-
-                if (p != NULL) {
-                    req.type = FREE;
-                    req.oldp = p;
-                    write(fd[0], &req, sizeof(req));
-                    read(fd[0], &res, sizeof(res));
-                }
-
-                total_size -= size;
-                break;
-
-            default:
-                assert(0);
-        }
-
-        /* update the high-water mark */
-        max_total_size = (total_size > max_total_size) ?
-            total_size : max_total_size;
-    }
-
-    close(fd[0]);
-    waitpid(pid, NULL, 0);
-
-    return (double)max_total_size / 10000;
+    return (double)args.max_total_size / (double)heapsize;
 }
 
 /*
