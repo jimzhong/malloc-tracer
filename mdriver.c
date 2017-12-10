@@ -94,23 +94,20 @@ static char **global_tracefiles = NULL;
 static void add_tracefile(char *trace);
 
 /* These functions read, allocate, and free storage for traces */
-static trace_t *read_trace(stats_t *stats, const char *tracedir,
-                           const char *filename);
+static trace_t *read_trace(const char *tracedir, const char *filename);
 static void reinit_trace(trace_t *trace);
 static void free_trace(trace_t *trace);
 
 /* Routines for evaluating the utilization of libc malloc */
-static bool eval_libc_util(trace_t *trace);
+static void run_trace(trace_t *trace, int fd);
+static double eval_libc_util(trace_t *trace);
 
-/* Various helper routines */
-static void printresults(int n, stats_t *stats, sum_stats_t *sumstats);
+
 static void usage(char *prog);
-static void malloc_error(const trace_t *trace, int opnum, const char *fmt, ...)
-    __attribute__((format(printf, 3,4)));
+
 static void unix_error(const char *fmt, ...)
     __attribute__((format(printf, 1,2), noreturn));
-static void app_error(const char *fmt, ...)
-    __attribute__((format(printf, 1,2), noreturn));
+
 
 
 
@@ -264,8 +261,9 @@ static trace_t *read_trace(const char *tracedir, const char *filename)
                 trace->ops[op_index].index = index;
                 break;
             default:
-                app_error("Bogus type character (%c) in tracefile %s\n",
+                printf("Bogus type character (%c) in tracefile %s\n",
                           type[0], trace->filename);
+                exit(-1);
         }
         op_index++;
         if (op_index == trace->num_ops) break;
@@ -296,95 +294,71 @@ static void free_trace(trace_t *trace)
     free(trace->ops);         /* free the three arrays... */
     free(trace->blocks);
     free(trace->block_sizes);
-    free(trace->block_rand_base);
     free(trace);              /* and the trace record itself... */
 }
 
 
-/*
- * eval_mm_util - Evaluate the space utilization of the student's package
- *   The idea is to remember the high water mark "hwm" of the heap for
- *   an optimal allocator, i.e., no gaps and no internal fragmentation.
- *   Utilization is the ratio hwm/heapsize, where heapsize is the
- *   size of the heap in bytes after running the student's malloc
- *   package on the trace. Note that our implementation of mem_sbrk()
- *   doesn't allow the students to decrement the brk pointer, so brk
- *   is always the high water mark of the heap.
- *
- *   A higher number is better: 1 is optimal.
- */
-static double eval_mm_util(trace_t *trace, int tracenum)
+
+static void run_trace(trace_t *trace, int fd)
 {
     int i;
     int index;
-    size_t size, newsize, oldsize;
-    size_t max_total_size = 0;
-    size_t total_size = 0;
+    size_t size, oldsize, newsize;
     char *p;
     char *newp, *oldp;
 
+    size_t max_total_size;
+    size_t total_size = 0;
+
     reinit_trace(trace);
 
-    /* initialize the heap and the mm malloc package */
-    mem_reset_brk();
-    if (!mm_init())
-        app_error("trace %d: mm_init failed in eval_mm_util", tracenum);
+    // notify the parent
+    write(fd, "S", 1);
 
     for (i = 0;  i < trace->num_ops;  i++) {
         switch (trace->ops[i].type) {
+            case ALLOC: /* mm_alloc */
+                index = trace->ops[i].index;
+                size = trace->ops[i].size;
+                p = malloc(size);
+                assert(p != NULL);
+                /* Remember region and size */
+                trace->blocks[index] = p;
+                trace->block_sizes[index] = size;
+                total_size += size;
+                break;
 
-        case ALLOC: /* mm_alloc */
-            index = trace->ops[i].index;
-            size = trace->ops[i].size;
+            case REALLOC: /* mm_realloc */
+                index = trace->ops[i].index;
+                newsize = trace->ops[i].size;
+                oldsize = trace->block_sizes[index];
+                oldp = trace->blocks[index];
+                assert ((newp = realloc(oldp, newsize)) != NULL || newsize == 0);
+                /* Remember region and size */
+                trace->blocks[index] = newp;
+                trace->block_sizes[index] = newsize;
+                total_size += (newsize - oldsize);
+                break;
 
-            if ((p = mm_malloc(size)) == NULL) {
-                app_error("trace %d: mm_malloc failed in eval_mm_util",
-                          tracenum);
-            }
+            case FREE: /* mm_free */
+                index = trace->ops[i].index;
+                if (index < 0) {
+                    size = 0;
+                    p = NULL;
+                } else {
+                    size = trace->block_sizes[index];
+                    p = trace->blocks[index];
+                }
 
-            /* Remember region and size */
-            trace->blocks[index] = p;
-            trace->block_sizes[index] = size;
+                if (p != NULL) {
+                    free(p);
+                }
 
-            total_size += size;
-            break;
+                total_size -= size;
+                break;
 
-        case REALLOC: /* mm_realloc */
-            index = trace->ops[i].index;
-            newsize = trace->ops[i].size;
-            oldsize = trace->block_sizes[index];
-
-            oldp = trace->blocks[index];
-            if ((newp = mm_realloc(oldp,newsize)) == NULL && newsize != 0) {
-                app_error("trace %d: mm_realloc failed in eval_mm_util",
-                          tracenum);
-            }
-
-            /* Remember region and size */
-            trace->blocks[index] = newp;
-            trace->block_sizes[index] = newsize;
-
-            total_size += (newsize - oldsize);
-            break;
-
-        case FREE: /* mm_free */
-            index = trace->ops[i].index;
-            if (index < 0) {
-                size = 0;
-                p = 0;
-            } else {
-                size = trace->block_sizes[index];
-                p = trace->blocks[index];
-            }
-
-            mm_free(p);
-
-            total_size -= size;
-            break;
-
-        default:
-            app_error("trace %d: Nonexistent request type in eval_mm_util",
-                      tracenum);
+            default:
+                assert(0);
         }
 
         /* update the high-water mark */
@@ -392,24 +366,18 @@ static double eval_mm_util(trace_t *trace, int tracenum)
             total_size : max_total_size;
     }
 
-#if !REF_ONLY
-    printf(".");
-#endif
-
-    return ((double)max_total_size / (double)mem_heapsize());
+    // send max_total_size to parent
+    write(fd, &max_total_size, sizeof(max_total_size));
+    // wait util one byte is read
+    read(fd, &max_total_size, 1);
 }
 
 
-/*
- * app_error - Report an arbitrary application error
- */
-void app_error(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    fflush(NULL);
-    exit(1);
+static double eval_libc_util(trace_t *trace)
+{
+
+
+    return 0.0;
 }
 
 /*
