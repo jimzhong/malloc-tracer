@@ -311,9 +311,9 @@ static double eval_libc_util(trace_t *trace)
     }
 
     // parent process
-    int i;
-    int index;
+    close(fd[1]);
 
+    int index;
     char *oldp, *p;
     size_t oldsize, newsize, size;
 
@@ -323,10 +323,7 @@ static double eval_libc_util(trace_t *trace)
     request_t req;
     response_t res;
 
-    close(fd[1]);
-    write(fd[0], &(trace->num_ops), sizeof(trace->num_ops));
-
-    for (i = 0; i < trace->num_ops; i++) {
+    for (int i = 0; i < trace->num_ops; i++) {
         switch (trace->ops[i].type) {
             case ALLOC:
                 index = trace->ops[i].index;

@@ -15,15 +15,19 @@
 
 static void run(int fd)
 {
-    int i;
-    int num_ops;
+    ssize_t nread;
     request_t req;
     response_t res;
 
-    read(fd, &num_ops, sizeof(num_ops));
-
-    for (i = 0; i < num_ops; i++) {
-        read(fd, &req, sizeof(req));
+    for (;;) {
+        nread = read(fd, &req, sizeof(req));
+        if (nread == 0) {
+            // EOF
+            break;
+        } else if (nread < 0) {
+            perror("read");
+            exit(1);
+        }
         switch (req.type) {
             case ALLOC:
                 dbg_printf("alloc %zd\n", req.newsize);
@@ -45,9 +49,6 @@ static void run(int fd)
         dbg_printf("res %p\n", res.p);
         write(fd, &res, sizeof(res));
     }
-
-    //wait for EOF
-    read(fd, &num_ops, sizeof(num_ops));
 }
 
 
@@ -56,6 +57,10 @@ int main(int argc, char **argv)
     assert(argc == 2);
     int fd = atoi(argv[1]);
     dbg_printf("runtrace started. fd = %d\n", fd);
+    assert(mallopt(M_MMAP_MAX, 0));
+    //disable the use of mmap for large allocation requests.
+    assert(mallopt(M_TRIM_THRESHOLD, -1));
+    // do not shrink the heap
     run(fd);
     close(fd);
     dbg_printf("runtrace finished.\n");
