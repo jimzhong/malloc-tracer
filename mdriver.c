@@ -1,26 +1,19 @@
 /*
- * Mdriver.c - Autolab version of the CS:APP Malloc Lab Driver
+ * Mdriver.c
  *
- * Uses a collection of trace files to tests a malloc/free
- * implementation in mm.c.
+ * Measure the utilization of libc's malloc package
  *
  * Copyright (c) 2004-2016, R. Bryant and D. O'Hallaron, All rights
  * reserved.  May not be used, modified, or copied without permission.
  */
 #include <assert.h>
 #include <errno.h>
-#include <float.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <math.h>
-
 #include <pthread.h>
 
 #include <sys/types.h>
