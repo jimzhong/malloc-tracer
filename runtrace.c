@@ -56,7 +56,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     int fd = atoi(argv[1]);
-    dbg_printf("runtrace started. fd = %d\n", fd);
+    dbg_printf("runtrace started. pid = %d\n", getpid());
     assert(mallopt(M_MMAP_MAX, 0));
     //disable the use of mmap for large allocation requests.
     assert(mallopt(M_TRIM_THRESHOLD, -1));
