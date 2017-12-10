@@ -38,8 +38,6 @@
 
 /* Misc */
 #define MAXLINE     1024          /* max string size */
-#define HDRLINES       4          /* number of header lines in a trace file */
-#define LINENUM(i) (i+HDRLINES+1) /* cnvt trace request nums to linenums (origin 1) */
 
 
 /******************************
@@ -150,7 +148,7 @@ int main(int argc, char **argv)
         case 'v':
             verbose = 1;
             break;
-            
+
         default:
             usage(argv[0]);
             exit(1);
