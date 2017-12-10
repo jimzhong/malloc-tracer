@@ -161,8 +161,8 @@ int main(int argc, char **argv)
     for (i=0; i < num_global_tracefiles; i++) {
         trace = read_trace(tracedir, global_tracefiles[i]);
         util = eval_libc_util(trace) * 100.0;
-        free_trace(trace);
         printf("libc malloc utilization on tracefile %s: %.2lf%%\n", trace->filename, util);
+        free_trace(trace);
     }
 
     return 0;
