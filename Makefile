@@ -3,7 +3,7 @@
 #
 
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -O0 -g -std=c99
+CFLAGS = -Wall -Wextra -Werror -O0 -g -std=gnu99
 LIBS = -lm -pthread
 
 all: mdriver runtrace
