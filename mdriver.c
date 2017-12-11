@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <sys/ptrace.h>
 #include <sys/user.h>
+#include <sys/mman.h>
 
 #include "config.h"
 #include "cmd.h"
@@ -308,7 +309,7 @@ static int wait_for_syscall(pid_t child) {
 static size_t trace_heapsize(pid_t pid) {
     size_t heap_hi = 0;
     size_t heap_lo = 0;
-    int valid = 1;
+    size_t mmap_size = 0;
     struct user_regs_struct regs_in, regs_out;
     int status;
 
@@ -348,8 +349,15 @@ static size_t trace_heapsize(pid_t pid) {
                     printf("sys_brk(%llx) = %llx\n", regs_in.rdi, regs_out.rax);
                 break;
             case 9:
-                // TODO: calculate total heapsize with mmap enabled?
-                valid = 0;
+                if (verbose)
+                    printf("sys_mmap(%llx, %llx, %llx, %llx, %llx, %llx) = %llx\n",
+                        regs_in.rdi, regs_in.rsi, regs_in.rdx,
+                        regs_in.r10, regs_in.r8, regs_in.r9,
+                        regs_out.rax);
+                if (regs_in.r10 & MAP_ANONYMOUS) {
+                    mmap_size += regs_in.rsi;
+                }
+                break;
             case 0: //read
             case 1: //write
             case 2: //open
@@ -363,14 +371,12 @@ static size_t trace_heapsize(pid_t pid) {
     }
 
     if (verbose) {
-        printf("Heap high = %lx\n", heap_hi);
-        printf("Heap low = %lx\n", heap_lo);
+        printf("heap high = %lx\n", heap_hi);
+        printf("heap low = %lx\n", heap_lo);
+        printf("mmap size = %lx\n", mmap_size);
     }
 
-    if (!valid)
-        return 0;
-
-    return heap_hi - heap_lo;
+    return heap_hi - heap_lo + mmap_size;
 }
 
 
