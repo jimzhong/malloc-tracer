@@ -14,6 +14,9 @@
  */
 #define TRACEDIR "./traces/"
 
+
+#define MALLOC_MMAP_THRESHOLD 1024 * 1024
+
 /*
  * This is the list of default tracefiles in TRACEDIR that the driver
  * will use for testing. Modify this if you want to add or delete
