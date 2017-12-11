@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <sys/ptrace.h>
 
+#include "config.h"
 #include "cmd.h"
 
 #ifdef DEBUG
@@ -61,14 +62,14 @@ int main(int argc, char **argv)
     assert(argc == 2);
     int fd = atoi(argv[1]);
     dbg_printf("runtrace started. pid = %d\n", getpid());
-    assert(mallopt(M_MMAP_MAX, 0));
-    //disable the use of mmap for large allocation requests.
+    assert(mallopt(M_MMAP_THRESHOLD, MALLOC_MMAP_THRESHOLD));
     assert(mallopt(M_TRIM_THRESHOLD, -1));
     // do not shrink the heap
     if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0) {
         perror("ptrace");
     }
     raise(SIGTSTP);
+    sbrk(0);
     run(fd);
     close(fd);
     dbg_printf("runtrace finished.\n");
