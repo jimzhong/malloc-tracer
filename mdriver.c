@@ -313,18 +313,16 @@ static size_t trace_heapsize(pid_t pid) {
     struct user_regs_struct regs_in, regs_out;
     int status;
 
-    if (verbose)
-        printf("Tracer started, child pid = %d\n", pid);
-
     if (waitpid(pid, &status, 0) < 0) {
         unix_error("waitpid");
     }
     assert(WSTOPSIG(status) == SIGTSTP);
+
+    ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD);
+
     if (kill(pid, SIGCONT) < 0) {
         unix_error("kill");
     }
-
-    ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD);
 
     for (;;) {
         if (wait_for_syscall(pid))
